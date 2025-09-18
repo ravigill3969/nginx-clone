@@ -1,0 +1,161 @@
+package proxy
+
+import (
+	"fmt"
+	config "load-balancer/Config"
+	"load-balancer/utils"
+	"log"
+	"math"
+	"math/rand/v2"
+	"net/http"
+	"net/http/httputil"
+	"net/url"
+	"sync/atomic"
+	"time"
+)
+
+type ProxyServer struct {
+	cfg               *config.Config
+	activeConnections map[string]*int32
+	Status            map[string]int
+
+	counter uint32
+}
+
+func (p *ProxyServer) StartHealthMonitor(interval time.Duration) {
+	go func() {
+		for _, currentServerURL := range p.cfg.Backends {
+			url := utils.BackendURL(fmt.Sprintf("%s%s", currentServerURL, p.cfg.HealthCheckPath))
+			if err := url.Validate(); err != nil {
+				p.Status[currentServerURL] = 1
+			} else {
+				p.Status[currentServerURL] = 0
+			}
+		}
+		time.Sleep(interval)
+
+	}()
+}
+
+func (p *ProxyServer) GetHealthyBackends() []string {
+	var healthy []string
+	for _, b := range p.cfg.Backends {
+		if p.Status[b] == 0 { // 0 = healthy
+			healthy = append(healthy, b)
+		}
+	}
+	return healthy
+}
+
+func NewProxyServer(cfg *config.Config) *ProxyServer {
+	activeConnections := make(map[string]*int32)
+	status := make(map[string]int)
+
+	for _, b := range cfg.Backends {
+		var zero int32
+		activeConnections[b] = &zero
+		status[b] = 0
+	}
+
+	return &ProxyServer{
+		cfg:               cfg,
+		activeConnections: activeConnections,
+		Status:            status,
+	}
+}
+
+func (p *ProxyServer) GetRandomBackend() string {
+	healthy := p.GetHealthyBackends()
+	idx := rand.IntN(len(healthy))
+	return healthy[idx]
+}
+
+func (p *ProxyServer) GetLeastConnBackend() (string, error) {
+	var chosen string
+	var minConns int32 = math.MaxInt32
+
+	healthy := p.GetHealthyBackends()
+
+	for _, currentURL := range healthy {
+		count := p.activeConnections[currentURL]
+
+		healthURL := fmt.Sprintf("%s%s", currentURL, p.cfg.HealthCheckPath)
+
+		if err := utils.BackendURL(healthURL).Validate(); err != nil {
+			continue
+		}
+
+		if *count < minConns {
+			minConns = *count
+			chosen = currentURL
+		}
+	}
+
+	if chosen == "" {
+		return "", fmt.Errorf("no healthy backend available")
+	}
+
+	atomic.AddInt32(p.activeConnections[chosen], 1)
+
+	return chosen, nil
+}
+
+func (p *ProxyServer) GetRoundRobinBackend() string {
+	healthy := p.GetHealthyBackends()
+	idx := atomic.AddUint32(&p.counter, 1)
+	return healthy[idx%uint32(len(healthy))]
+}
+
+func (p *ProxyServer) GetNextBackend() (string, error) {
+
+	switch p.cfg.Strategy {
+	case "leastconn":
+		return p.GetLeastConnBackend()
+
+	case "random":
+		return p.GetRandomBackend(), nil
+	default:
+		return p.GetRoundRobinBackend(), nil
+	}
+}
+
+func (p *ProxyServer) ProxyHandler(w http.ResponseWriter, r *http.Request) {
+
+	if p.cfg.ErrorRate > 0 && rand.Float64() < p.cfg.ErrorRate {
+		http.Error(w, "Simulated error (chaos)", http.StatusInternalServerError)
+		log.Printf("[CHAOS] Injected error for %s %s", r.Method, r.URL.Path)
+		return
+	}
+
+	start := time.Now()
+
+	backend, err := p.GetNextBackend()
+
+	if err != nil {
+		http.Error(w, "No backend available", http.StatusBadGateway)
+		log.Printf("[ERROR] %s %s -> no backend (%v)", r.Method, r.URL.Path, err)
+		return
+	}
+
+	targetURL, err := url.Parse(backend)
+
+	if err != nil {
+		http.Error(w, "Bad gateway", http.StatusBadGateway)
+		log.Printf("[ERROR] invalid backend URL: %s (%v)", backend, err)
+		return
+	}
+
+	proxy := httputil.NewSingleHostReverseProxy(targetURL)
+	proxy.ModifyResponse = func(r *http.Response) error {
+		r.Header.Set("X-Proxy-Type", "nginx-clone")
+		return nil
+	}
+
+	defer func() {
+		atomic.AddInt32(p.activeConnections[backend], -1)
+	}()
+
+	proxy.ServeHTTP(w, r)
+	duration := time.Since(start)
+	log.Printf("[INFO] %s %s -> %s (%v)", r.Method, r.URL.Path, backend, duration)
+}
