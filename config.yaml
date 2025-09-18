@@ -1,7 +1,8 @@
 backends:
-  - http://localhost:8080
-  - http://localhost:7070
-
+  - url: http://localhost:8080
+    weight: 3
+  - url: http://localhost:7070
+    weight: 1
 health_check_path: /health
-error_rate: 0.2 # 20% of requests fail on purpose
-strategy: leastconn 
+strategy: weighted
+error_rate: 0.0

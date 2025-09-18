@@ -20,18 +20,17 @@ type ProxyServer struct {
 	cfg               *config.Config
 	activeConnections map[string]*int32
 	Status            map[string]int
-
-	counter uint32
+	counter           uint32
 }
 
 func (p *ProxyServer) StartHealthMonitor(interval time.Duration) {
 	go func() {
-		for _, currentServerURL := range p.cfg.Backends {
-			url := utils.BackendURL(fmt.Sprintf("%s%s", currentServerURL, p.cfg.HealthCheckPath))
+		for _, currentServer := range p.cfg.Backends {
+			url := utils.BackendURL(fmt.Sprintf("%s%s", currentServer.URL, p.cfg.HealthCheckPath))
 			if err := url.Validate(); err != nil {
-				p.Status[currentServerURL] = 1
+				p.Status[currentServer.URL] = 1
 			} else {
-				p.Status[currentServerURL] = 0
+				p.Status[currentServer.URL] = 0
 			}
 		}
 		time.Sleep(interval)
@@ -39,11 +38,11 @@ func (p *ProxyServer) StartHealthMonitor(interval time.Duration) {
 	}()
 }
 
-func (p *ProxyServer) GetHealthyBackends() []string {
-	var healthy []string
+func (p *ProxyServer) GetHealthyBackends() []config.Backend {
+	var healthy []config.Backend
 	for _, b := range p.cfg.Backends {
-		if p.Status[b] == 0 { // 0 = healthy
-			healthy = append(healthy, b)
+		if p.Status[b.URL] == 0 { // 0 = healthy
+			healthy = append(healthy, config.Backend{URL: b.URL, Weight: b.Weight})
 		}
 	}
 	return healthy
@@ -55,8 +54,9 @@ func NewProxyServer(cfg *config.Config) *ProxyServer {
 
 	for _, b := range cfg.Backends {
 		var zero int32
-		activeConnections[b] = &zero
-		status[b] = 0
+		activeConnections[b.URL] = &zero
+		status[b.URL] = 0
+
 	}
 
 	return &ProxyServer{
@@ -69,7 +69,7 @@ func NewProxyServer(cfg *config.Config) *ProxyServer {
 func (p *ProxyServer) GetRandomBackend() string {
 	healthy := p.GetHealthyBackends()
 	idx := rand.IntN(len(healthy))
-	return healthy[idx]
+	return healthy[idx].URL
 }
 
 func (p *ProxyServer) GetLeastConnBackend() (string, error) {
@@ -78,10 +78,10 @@ func (p *ProxyServer) GetLeastConnBackend() (string, error) {
 
 	healthy := p.GetHealthyBackends()
 
-	for _, currentURL := range healthy {
-		count := p.activeConnections[currentURL]
+	for _, current := range healthy {
+		count := p.activeConnections[current.URL]
 
-		healthURL := fmt.Sprintf("%s%s", currentURL, p.cfg.HealthCheckPath)
+		healthURL := fmt.Sprintf("%s%s", current, p.cfg.HealthCheckPath)
 
 		if err := utils.BackendURL(healthURL).Validate(); err != nil {
 			continue
@@ -89,7 +89,7 @@ func (p *ProxyServer) GetLeastConnBackend() (string, error) {
 
 		if *count < minConns {
 			minConns = *count
-			chosen = currentURL
+			chosen = current.URL
 		}
 	}
 
@@ -105,7 +105,27 @@ func (p *ProxyServer) GetLeastConnBackend() (string, error) {
 func (p *ProxyServer) GetRoundRobinBackend() string {
 	healthy := p.GetHealthyBackends()
 	idx := atomic.AddUint32(&p.counter, 1)
-	return healthy[idx%uint32(len(healthy))]
+	return healthy[idx%uint32(len(healthy))].URL
+}
+
+func (p *ProxyServer) GetWeightedRoundRobinBackend() (string, error) {
+	backends := p.GetHealthyBackends()
+	var expanded []string
+	for _, b := range backends {
+		if b.Weight <= 0 {
+			continue
+		}
+		for i := 0; i < b.Weight; i++ {
+			expanded = append(expanded, b.URL)
+		}
+	}
+
+	if len(expanded) == 0 {
+		return "", fmt.Errorf("no healthy backends with valid weights")
+	}
+
+	idx := atomic.AddUint32(&p.counter, 1)
+	return expanded[idx%uint32(len(expanded))], nil
 }
 
 func (p *ProxyServer) GetNextBackend() (string, error) {
@@ -113,7 +133,8 @@ func (p *ProxyServer) GetNextBackend() (string, error) {
 	switch p.cfg.Strategy {
 	case "leastconn":
 		return p.GetLeastConnBackend()
-
+	case "weighted":
+		return p.GetWeightedRoundRobinBackend()
 	case "random":
 		return p.GetRandomBackend(), nil
 	default:

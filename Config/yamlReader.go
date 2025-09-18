@@ -6,8 +6,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+type Backend struct {
+	URL    string `yaml:"url"`
+	Weight int    `yaml:"weight"`
+}
+
 type Config struct {
-	Backends        []string `yaml:"backends"`
+	Backends        []Backend `yaml:"backends"`
 	HealthCheckPath string   `yaml:"health_check_path"`
 	LatencyMS       int      `yaml:"latency_ms"`
 	ErrorRate       float64  `yaml:"error_rate"`
