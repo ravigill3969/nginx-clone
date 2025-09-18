@@ -6,3 +6,4 @@ backends:
 health_check_path: /health
 strategy: weighted
 error_rate: 0.0
+sticky_cookie: "STICKY_SESSION"

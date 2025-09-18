@@ -13,10 +13,11 @@ type Backend struct {
 
 type Config struct {
 	Backends        []Backend `yaml:"backends"`
-	HealthCheckPath string   `yaml:"health_check_path"`
-	LatencyMS       int      `yaml:"latency_ms"`
-	ErrorRate       float64  `yaml:"error_rate"`
-	Strategy        string   `yaml:"strategy"`
+	HealthCheckPath string    `yaml:"health_check_path"`
+	LatencyMS       int       `yaml:"latency_ms"`
+	ErrorRate       float64   `yaml:"error_rate"`
+	Strategy        string    `yaml:"strategy"`
+	StickyCookie    string    `yaml:"sticky_cookie"`
 }
 
 func LoadConfig(path string) (*Config, error) {

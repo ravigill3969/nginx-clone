@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"fmt"
 	config "load-balancer/Config"
 	"load-balancer/utils"
@@ -21,6 +22,26 @@ type ProxyServer struct {
 	activeConnections map[string]*int32
 	Status            map[string]int
 	counter           uint32
+
+	  sessions map[string]string 
+}
+
+func NewProxyServer(cfg *config.Config) *ProxyServer {
+	activeConnections := make(map[string]*int32)
+	status := make(map[string]int)
+
+	for _, b := range cfg.Backends {
+		var zero int32
+		activeConnections[b.URL] = &zero
+		status[b.URL] = 0
+
+	}
+
+	return &ProxyServer{
+		cfg:               cfg,
+		activeConnections: activeConnections,
+		Status:            status,
+	}
 }
 
 func (p *ProxyServer) StartHealthMonitor(interval time.Duration) {
@@ -48,24 +69,6 @@ func (p *ProxyServer) GetHealthyBackends() []config.Backend {
 	return healthy
 }
 
-func NewProxyServer(cfg *config.Config) *ProxyServer {
-	activeConnections := make(map[string]*int32)
-	status := make(map[string]int)
-
-	for _, b := range cfg.Backends {
-		var zero int32
-		activeConnections[b.URL] = &zero
-		status[b.URL] = 0
-
-	}
-
-	return &ProxyServer{
-		cfg:               cfg,
-		activeConnections: activeConnections,
-		Status:            status,
-	}
-}
-
 func (p *ProxyServer) GetRandomBackend() string {
 	healthy := p.GetHealthyBackends()
 	idx := rand.IntN(len(healthy))
@@ -81,7 +84,7 @@ func (p *ProxyServer) GetLeastConnBackend() (string, error) {
 	for _, current := range healthy {
 		count := p.activeConnections[current.URL]
 
-		healthURL := fmt.Sprintf("%s%s", current, p.cfg.HealthCheckPath)
+		healthURL := fmt.Sprintf("%s%s", current.URL, p.cfg.HealthCheckPath)
 
 		if err := utils.BackendURL(healthURL).Validate(); err != nil {
 			continue
@@ -160,6 +163,11 @@ func (p *ProxyServer) ProxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+
+	r = r.WithContext(ctx)
+
 	targetURL, err := url.Parse(backend)
 
 	if err != nil {
@@ -169,6 +177,9 @@ func (p *ProxyServer) ProxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	proxy := httputil.NewSingleHostReverseProxy(targetURL)
+	proxy.Transport = &http.Transport{
+		ResponseHeaderTimeout: 2 * time.Second,
+	}
 	proxy.ModifyResponse = func(r *http.Response) error {
 		r.Header.Set("X-Proxy-Type", "nginx-clone")
 		return nil
@@ -226,3 +237,6 @@ func (p *ProxyServer) WatchConfig(path string) {
 		}
 	}
 }
+
+// func (p *ProxyServer)GetStickyBackend(r *http.Request){
+// }	
