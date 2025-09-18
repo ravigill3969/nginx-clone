@@ -12,6 +12,8 @@ import (
 	"net/url"
 	"sync/atomic"
 	"time"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 type ProxyServer struct {
@@ -158,4 +160,48 @@ func (p *ProxyServer) ProxyHandler(w http.ResponseWriter, r *http.Request) {
 	proxy.ServeHTTP(w, r)
 	duration := time.Since(start)
 	log.Printf("[INFO] %s %s -> %s (%v)", r.Method, r.URL.Path, backend, duration)
+}
+
+func (p *ProxyServer) WatchConfig(path string) {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		log.Fatalf("failed to create watcher: %v", err)
+	}
+	defer watcher.Close()
+
+	err = watcher.Add(path)
+
+	if err != nil {
+		log.Fatalf("failed to watch file %s: %v", path, err)
+	}
+
+	log.Printf("[CONFIG] Watching %s for changes...", path)
+
+	for {
+		select {
+		case event, ok := <-watcher.Events:
+			if !ok {
+				return
+			}
+			if event.Op&(fsnotify.Write|fsnotify.Create) != 0 {
+				log.Printf("[CONFIG] Change detected: %s", event.Name)
+
+				cfg, err := config.LoadConfig(path)
+				if err != nil {
+					log.Printf("[CONFIG] Failed to reload: %v", err)
+					continue
+				}
+
+				// Apply the new config safely
+				p.cfg = cfg
+				log.Printf("[CONFIG] Reloaded successfully: %+v", cfg)
+			}
+
+		case err, ok := <-watcher.Errors:
+			if !ok {
+				return
+			}
+			log.Printf("[CONFIG] Watcher error: %v", err)
+		}
+	}
 }
