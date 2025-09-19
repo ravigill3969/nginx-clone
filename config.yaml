@@ -7,3 +7,13 @@ health_check_path: /health
 strategy: weighted
 error_rate: 0.0
 sticky_cookie: "STICKY_SESSION"
+request_timeout: 2s
+max_retries: 2
+
+rate_limit:
+  per_client:
+    rate: 100 # tokens per second
+    capacity: 200 # bucket size
+  per_backend:
+    rate: 300
+    capacity: 500

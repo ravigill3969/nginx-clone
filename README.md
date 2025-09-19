@@ -1,85 +1,77 @@
-Nice, your load balancer is already in great shape ✅ (strategies, health checks, chaos injection, Prometheus metrics). If you want to push it further — here are **next-level features** that are realistic and resume-worthy:
+Nice — let’s jump back to your proxy server project 🚀
+
+Right now, you’ve already built a pretty capable reverse proxy in Go with:
+
+* **Round Robin, Random, Least Connections, Weighted** strategies
+* **Health checks** with goroutines
+* **/metrics endpoint** for Prometheus
+* **Config reload with fsnotify**
+* **Chaos injection (error rate)**
+* **Timeouts with context**
+* **Sticky sessions (cookie/IP)**
+
+That’s already **resume-worthy** for small-scale distributed systems work.
 
 ---
 
-# 🚀 Features You Can Add to Your Load Balancer
+# 🔹 Next Topics We Could Add to the Proxy
 
-### 1. **Weighted Round Robin (done partially)**
+### 1. **Circuit Breaker** 🛑
 
-* Already started — refine it so traffic is distributed *proportionally* by weights.
-* Add ability to change weights dynamically (from config reload).
-
----
-
-### 2. **Circuit Breaker** 🛑
-
-* If a backend keeps failing health checks (e.g. 5 consecutive fails), mark it **DOWN** for X seconds before retrying.
-* Protects your system from sending requests to “flapping” or dead servers.
+* If a backend fails N times in a row → mark as DOWN for X seconds.
+* Prevents constant retries to a dead backend.
+* Works with your health checker but adds stateful fail tracking.
 
 ---
 
-### 3. **Retries with Backoff** 🔁
+### 2. **Retries** 🔁
 
-* If a backend returns 5xx, retry request on another healthy backend.
-* Add exponential backoff (e.g., wait 100ms → 200ms → 400ms before retry).
-
----
-
-### 4. **Request Timeout + Deadlines** ⏱️
-
-* Add per-request deadlines (e.g., drop request if backend doesn’t respond in 2s).
-* This avoids clients being stuck forever.
+* If a backend fails for a request → try another healthy backend (up to 3 times).
+* Controlled via YAML config (`max_retries: 2`).
+* Needs to integrate with context deadlines.
 
 ---
 
-### 5. **Rate Limiting** 🚦
+### 3. **Rate Limiting** 🚦
 
-* Prevent overload by limiting requests per second (per client IP or globally).
-* Can implement with a **token bucket** or **leaky bucket** algorithm.
+* Per-client or per-backend request limits.
+* Can use a token bucket or leaky bucket algorithm.
+* Example YAML:
 
----
-
-### 6. **Sticky Sessions** 🍪
-
-* Option to send the same client (by cookie or IP hash) to the same backend.
-* Useful for apps that don’t share session state.
+  ```yaml
+  rate_limit_per_client: 100 # requests per minute
+  ```
 
 ---
 
-### 7. **TLS Termination** 🔒
+### 4. **Graceful Shutdown** 🛑
 
-* Accept HTTPS on the proxy → forward plain HTTP to backends.
-* Add automatic certificate management (e.g. Let’s Encrypt).
-
----
-
-### 8. **Admin Dashboard / API** 📊
-
-* Expose `/status` endpoint → show:
-
-  * healthy/unhealthy backends
-  * active connections
-  * error counts
-* Or build a small **HTML/JSON dashboard** with Go templates.
+* Stop accepting new requests but finish ongoing ones.
+* Useful in Kubernetes when a pod is being killed.
 
 ---
 
-### 9. **Graceful Shutdown** ✅
+### 5. **Dynamic Backends** ⚡
 
-* On `SIGTERM`, stop accepting new requests but finish ongoing ones.
-* Prevents dropped requests during deploys.
-
----
-
-### 10. **Service Discovery** 🔍
-
-* Instead of static YAML, support DNS or Consul/Etcd/ZooKeeper for discovering backends dynamically.
+* Allow `/admin/add-backend` or `/admin/remove-backend` endpoints.
+* Lets you scale backends in/out at runtime without YAML reload.
 
 ---
 
-⚡ Each of these adds “real-world” flavor — many are exactly what **NGINX, Envoy, HAProxy** do.
-You don’t need all at once; even **2–3 more features** make it very impressive on a resume.
+### 6. **Observability Additions** 📊
+
+* Histograms for request latency (`proxy_request_duration_seconds`).
+* Error counters (`proxy_errors_total`).
+* Separate metrics per backend.
 
 ---
 
-👉 Do you want me to pick **one concrete next feature (like circuit breaker)** and show you exactly how to add it step by step to your code?
+# 🔹 Big Picture
+
+Once you add **circuit breakers + retries**, your proxy will handle failures gracefully.
+Once you add **rate limiting**, it protects backends.
+Once you add **graceful shutdown**, it’s Kubernetes-ready.
+
+---
+
+👉 Do you want to start with **circuit breaker**, since it’s the most natural next step after health checks?

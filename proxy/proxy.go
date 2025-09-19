@@ -22,8 +22,6 @@ type ProxyServer struct {
 	activeConnections map[string]*int32
 	Status            map[string]int
 	counter           uint32
-
-	  sessions map[string]string 
 }
 
 func NewProxyServer(cfg *config.Config) *ProxyServer {
@@ -146,7 +144,6 @@ func (p *ProxyServer) GetNextBackend() (string, error) {
 }
 
 func (p *ProxyServer) ProxyHandler(w http.ResponseWriter, r *http.Request) {
-
 	if p.cfg.ErrorRate > 0 && rand.Float64() < p.cfg.ErrorRate {
 		http.Error(w, "Simulated error (chaos)", http.StatusInternalServerError)
 		log.Printf("[CHAOS] Injected error for %s %s", r.Method, r.URL.Path)
@@ -154,44 +151,63 @@ func (p *ProxyServer) ProxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	start := time.Now()
+	tried := make(map[string]bool)
+	var lastErr error
 
-	backend, err := p.GetNextBackend()
+	for attempt := 0; attempt <= p.cfg.MaxRetries; attempt++ {
 
-	if err != nil {
-		http.Error(w, "No backend available", http.StatusBadGateway)
-		log.Printf("[ERROR] %s %s -> no backend (%v)", r.Method, r.URL.Path, err)
-		return
+		backend, err := p.GetNextBackend()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		if tried[backend] {
+			continue
+		}
+		tried[backend] = true
+
+		ctx, cancel := context.WithTimeout(r.Context(), p.cfg.RequestTimeout)
+		defer cancel()
+		r = r.WithContext(ctx)
+
+		targetURL, err := url.Parse(backend)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		proxy := httputil.NewSingleHostReverseProxy(targetURL)
+		proxy.Transport = &http.Transport{
+			ResponseHeaderTimeout: p.cfg.RequestTimeout,
+		}
+
+		proxy.ModifyResponse = func(resp *http.Response) error {
+			if resp.StatusCode >= 500 {
+				lastErr = fmt.Errorf("backend %s failed with %d", backend, resp.StatusCode)
+				return fmt.Errorf("retry")
+			}
+			return nil
+		}
+
+		proxy.ErrorHandler = func(rw http.ResponseWriter, req *http.Request, err error) {
+			lastErr = err
+		}
+
+		proxy.ServeHTTP(w, r)
+
+		if lastErr == nil {
+			// success
+			log.Printf("[INFO] %s %s -> %s (%v)", r.Method, r.URL.Path, backend, time.Since(start))
+			return
+		}
+
+		log.Printf("[RETRY] Attempt %d failed on %s: %v", attempt+1, backend, lastErr)
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-	defer cancel()
-
-	r = r.WithContext(ctx)
-
-	targetURL, err := url.Parse(backend)
-
-	if err != nil {
-		http.Error(w, "Bad gateway", http.StatusBadGateway)
-		log.Printf("[ERROR] invalid backend URL: %s (%v)", backend, err)
-		return
-	}
-
-	proxy := httputil.NewSingleHostReverseProxy(targetURL)
-	proxy.Transport = &http.Transport{
-		ResponseHeaderTimeout: 2 * time.Second,
-	}
-	proxy.ModifyResponse = func(r *http.Response) error {
-		r.Header.Set("X-Proxy-Type", "nginx-clone")
-		return nil
-	}
-
-	defer func() {
-		atomic.AddInt32(p.activeConnections[backend], -1)
-	}()
-
-	proxy.ServeHTTP(w, r)
-	duration := time.Since(start)
-	log.Printf("[INFO] %s %s -> %s (%v)", r.Method, r.URL.Path, backend, duration)
+	// retries exhausted
+	http.Error(w, "All backends failed", http.StatusBadGateway)
+	log.Printf("[FAIL] %s %s after %d attempts (%v)", r.Method, r.URL.Path, p.cfg.MaxRetries, lastErr)
 }
 
 func (p *ProxyServer) WatchConfig(path string) {
@@ -237,6 +253,3 @@ func (p *ProxyServer) WatchConfig(path string) {
 		}
 	}
 }
-
-// func (p *ProxyServer)GetStickyBackend(r *http.Request){
-// }	
